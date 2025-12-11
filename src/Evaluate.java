@@ -1,8 +1,9 @@
+import java.util.Random;
+
 public class Evaluate {
-//TODO randomize the moves of equal value in the beginning of the game so that not all games are the same
+	private static final Random random = new Random();
 	public static boolean isOver(Board board) {
 		if (winner(board) != null) return true;
-		// Need to check for a win
 		return board.numberEmptySquares() == 0;
 	}
 
@@ -28,8 +29,8 @@ public class Evaluate {
 	public static int score(Board board) {
 		String w = winner(board);
 		if (w == null) return 0;
-		if (w.equals("X Wins")) return +1500000000;
-		if (w.equals("O Wins")) return -1500000000;
+		if (w.equals("X Wins")) return +500000000;
+		if (w.equals("O Wins")) return -500000000;
 		return 0; // tie
 	}
 
@@ -39,6 +40,7 @@ public class Evaluate {
 
 		long xmask = board.get(Player.X);
 		long omask = board.get(Player.O);
+		long allOccupied = xmask | omask;
 
 		int xThrees = 0;      // 3 in a row
 		int oThrees = 0;
@@ -49,11 +51,10 @@ public class Evaluate {
 
 		long xTwoMask = 0L;   // Track which lines have 2 in a row for fork detection
 		long oTwoMask = 0L;
-
+		long xThreeMask = 0L; // Track which lines have 3 in a row
+		long oThreeMask = 0L;
+		long blockedLines = 0L;
 		for (int i = 0; i < Line.lines.length; i++) {
-//TODO blocked lines will not get unblocked so no need to go through all the lines to find unblocked every time
-			//TODO can have a table of all blocked lines
-			//TODO use line class, can also use line class to find forks
 
 			Line line = Line.lines[i];
 			long mask = line.positions();
@@ -64,30 +65,34 @@ public class Evaluate {
 			int xCount = Long.bitCount(xMasked);
 			int oCount = Long.bitCount(oMasked);
 
-			// Blocked lines are worthless
-			if (xCount > 0 && oCount > 0) continue;
+			if (xCount > 0 && oCount > 0) {
+				blockedLines |= (1L << i);
+				continue;
+			}
 
 			// X's pieces in this line
 			if (oCount == 0) {
-                if (xCount == 3) {
-                    xThrees++;
-                } else if (xCount == 2) {
-                    xTwoMask |= (1L << i);
-                    xTwos++;
-                } else if (xCount == 1) {
-                    xOnes++;
-                }
+				if (xCount == 3) {
+					xThrees++;
+					xThreeMask |= (1L << i);
+				} else if (xCount == 2) {
+					xTwoMask |= (1L << i);
+					xTwos++;
+				} else if (xCount == 1) {
+					xOnes++;
+				}
 			}
 			// O's pieces in this line
 			else if (xCount == 0) {
-                if (oCount == 3) {
-                    oThrees++;
-                } else if (oCount == 2) {
-                    oTwoMask |= (1L << i);
-                    oTwos++;
-                } else if (oCount == 1) {
-                    oOnes++;
-                }
+				if (oCount == 3) {
+					oThrees++;
+					oThreeMask |= (1L << i);
+				} else if (oCount == 2) {
+					oTwoMask |= (1L << i);
+					oTwos++;
+				} else if (oCount == 1) {
+					oOnes++;
+				}
 			}
 		}
 
@@ -95,11 +100,17 @@ public class Evaluate {
 		int xForks = countForks(xTwoMask, xmask, omask);
 		int oForks = countForks(oTwoMask, omask, xmask);
 
-		// Center control 
+		// Center control
 		int xCenter = countCenterControl(xmask);
 		int oCenter = countCenterControl(omask);
 
+		int xForcedWins = checkForcedWins(xmask, omask, allOccupied);
+		int oForcedWins = checkForcedWins(omask, xmask, allOccupied);
+
 		int score = 0;
+
+		// Forced wins (four corners, four centers in a plane)
+		score += (xForcedWins - oForcedWins) * 50000;
 
 		score += (xThrees - oThrees) * 500;
 
@@ -111,13 +122,13 @@ public class Evaluate {
 		// 1 in a row
 		score += (xOnes - oOnes) * 30;
 
-		// Control valuable squares 
+		// Control valuable squares
 		score += (xCenter - oCenter) * 50;
-
-		//TODO add forced wins like four corners or four centers
+		if (Long.bitCount(allOccupied) < 10) {
+			score += random.nextInt(5) - 2; // Random value between -2 and +2
+		}
 		return score;
 	}
-
 
 	private static int countForks(long twoMask, long playerBoard, long opponentBoard) {
 		int forkCount = 0;
@@ -127,22 +138,22 @@ public class Evaluate {
 		for (int lineIdx = 0; lineIdx < Line.lines.length; lineIdx++) {
 			if ((twoMask & (1L << lineIdx)) == 0) continue;
 
-			long linePos = Line.lines[lineIdx].positions();
+			Line line = Line.lines[lineIdx];
+			long linePos = line.positions();
 			long emptyInLine = linePos & ~allOccupied;
 
 			// For each empty square in this 2 in a row
-			for (int emptyPos = 0; emptyPos < 64; emptyPos++) {
-				if ((emptyInLine & (1L << emptyPos)) == 0) continue;
-
+			for (int emptyPos : Bit.ones(emptyInLine)) {
 				// Temporarily place a piece
 				long testBoard = playerBoard | (1L << emptyPos);
 
 				// Count how many unblocked 3 in a rows this creates
 				int threatsCreated = 0;
-				for (Line line : Line.lines) {
-					long mask = line.positions();
+				for (Line checkLine : Line.lines) {
+					long mask = checkLine.positions();
 
-					if ((mask & (1L << emptyPos)) == 0) continue;
+					// Only check lines containing this position
+					if (!checkLine.contains(emptyPos)) continue;
 
 					int playerCount = Long.bitCount(testBoard & mask);
 					int opponentCount = Long.bitCount(opponentBoard & mask);
@@ -198,5 +209,117 @@ public class Evaluate {
 		}
 
 		return control;
+	}
+	private static int checkForcedWins(long playerBoard, long opponentBoard, long allOccupied) {
+		int forcedWins = 0;
+
+		// Check each plane for corner/center
+		for (Plane plane : Plane.planes) {
+			long planeMask = plane.positions();
+			long playerInPlane = playerBoard & planeMask;
+			long opponentInPlane = opponentBoard & planeMask;
+
+			// Skip if opponent has any pieces in this plane
+			if (opponentInPlane != 0) continue;
+
+			int playerCount = Long.bitCount(playerInPlane);
+
+			// Four corners pattern
+			if (playerCount == 4) {
+				if (isFourCorners(playerInPlane, planeMask)) {
+					forcedWins++;
+				}
+			}
+
+			// Four centers pattern (2x2 center block)
+			if (playerCount == 4) {
+				if (isFourCenters(playerInPlane, planeMask)) {
+					forcedWins++;
+				}
+			}
+		}
+
+		// Check for two intersecting 3-in-a-rows with shared empty square
+		forcedWins += checkIntersectingThrees(playerBoard, opponentBoard, allOccupied);
+
+		return forcedWins;
+	}
+
+	private static boolean isFourCorners(long playerInPlane, long planeMask) {
+		int[] positions = new int[16];
+		int count = 0;
+		for (int pos : Bit.ones(planeMask)) {
+			positions[count++] = pos;
+		}
+
+		if (count != 16) return false;
+
+		// Check if the 4 corners are occupied
+		long corners = 0L;
+		corners |= (1L << positions[0]);
+		corners |= (1L << positions[3]);
+		corners |= (1L << positions[12]);
+		corners |= (1L << positions[15]);
+
+		return (playerInPlane & corners) == corners;
+	}
+
+
+	private static boolean isFourCenters(long playerInPlane, long planeMask) {
+		int[] positions = new int[16];
+		int count = 0;
+		for (int pos : Bit.ones(planeMask)) {
+			positions[count++] = pos;
+		}
+
+		if (count != 16) return false;
+
+		// Center 2x2 block in a 4x4 grid is at indices 5, 6, 9, 10
+		long centers = 0L;
+		centers |= (1L << positions[5]);
+		centers |= (1L << positions[6]);
+		centers |= (1L << positions[9]);
+		centers |= (1L << positions[10]);
+
+		return (playerInPlane & centers) == centers;
+	}
+
+	private static int checkIntersectingThrees(long playerBoard, long opponentBoard, long allOccupied) {
+		int intersectingThrees = 0;
+
+		// Find all lines with 3 pieces
+		for (int i = 0; i < Line.lines.length; i++) {
+			Line line1 = Line.lines[i];
+			long mask1 = line1.positions();
+
+			int playerCount1 = Long.bitCount(playerBoard & mask1);
+			int opponentCount1 = Long.bitCount(opponentBoard & mask1);
+
+			// Skip if not exactly 3 or blocked
+			if (playerCount1 != 3 || opponentCount1 != 0) continue;
+
+			// Find the empty square in this line
+			long empty1 = mask1 & ~allOccupied;
+			if (Long.bitCount(empty1) != 1) continue;
+
+			// Check if another 3-in-a-row intersects at this empty square
+			for (int j = i + 1; j < Line.lines.length; j++) {
+				Line line2 = Line.lines[j];
+				long mask2 = line2.positions();
+
+				int playerCount2 = Long.bitCount(playerBoard & mask2);
+				int opponentCount2 = Long.bitCount(opponentBoard & mask2);
+
+				if (playerCount2 != 3 || opponentCount2 != 0) continue;
+
+				long empty2 = mask2 & ~allOccupied;
+
+				// If both lines share the same empty square, it's a forced win
+				if (empty1 == empty2) {
+					intersectingThrees++;
+				}
+			}
+		}
+		return intersectingThrees;
 	}
 }
